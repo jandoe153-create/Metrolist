@@ -59,6 +59,7 @@ import com.metrolist.music.ui.component.EnumDialog
 import com.metrolist.music.ui.component.Material3SettingsGroup
 import com.metrolist.music.ui.component.Material3SettingsItem
 import com.metrolist.music.ui.component.TextFieldDialog
+import com.metrolist.music.utils.AiKeyRing
 import com.metrolist.music.utils.rememberPreference
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -340,11 +341,23 @@ fun AiSettings(navController: NavController) {
             title = { Text(stringResource(R.string.ai_api_key)) },
             icon = { Icon(painterResource(R.drawable.key), null) },
             initialTextFieldValue = TextFieldValue(text = openRouterApiKey),
+            singleLine = false,
+            maxLines = 12,
+            isInputValid = { true },
             onDone = {
-                openRouterApiKey = it
+                // Normalisasi: satu key per baris, buang duplikat/spasi
+                openRouterApiKey = AiKeyRing.parse(it).joinToString("\n")
                 showApiKeyDialog = false
             },
             onDismiss = { showApiKeyDialog = false },
+            extraContent = {
+                Text(
+                    text = stringResource(R.string.ai_api_keys_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            },
         )
     }
 
@@ -561,11 +574,12 @@ fun AiSettings(navController: NavController) {
                                 icon = painterResource(R.drawable.key),
                                 title = { Text(stringResource(R.string.ai_api_key)) },
                                 description = {
+                                    val keyCount = AiKeyRing.parse(openRouterApiKey).size
                                     Text(
-                                        if (openRouterApiKey.isNotEmpty()) {
-                                            "•".repeat(minOf(openRouterApiKey.length, 8))
-                                        } else {
-                                            stringResource(R.string.not_set)
+                                        when {
+                                            keyCount > 1 -> stringResource(R.string.ai_api_keys_count, keyCount)
+                                            keyCount == 1 -> "•".repeat(minOf(openRouterApiKey.length, 8))
+                                            else -> stringResource(R.string.not_set)
                                         },
                                     )
                                 },

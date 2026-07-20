@@ -689,6 +689,8 @@
     <string name="ai_provider">Provider</string>
     <string name="ai_base_url">Base URL</string>
     <string name="ai_api_key">API key</string>
+    <string name="ai_api_keys_count">%1$d keys · auto-rotation</string>
+    <string name="ai_api_keys_hint">One key per line (10+ supported). Keys rotate automatically and are also used by Ruang Dengar (Gemini fallback).</string>
     <string name="ai_model">Model</string>
     <string name="ai_translation_mode">Translation mode</string>
     <string name="ai_target_language">Target language</string>
