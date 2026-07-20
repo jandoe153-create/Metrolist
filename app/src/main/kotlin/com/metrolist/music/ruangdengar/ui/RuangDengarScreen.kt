@@ -1209,7 +1209,7 @@ private fun RdVinylDeck(coverUrl: String?, spinning: Boolean, armDown: Boolean) 
                 .graphicsLayer { rotationZ = rotation.value % 360f },
         ) {
             androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-                val c = size.center
+                val c = center
                 val u = size.minDimension / 100f
                 drawCircle(Color(0xFF0D0A06), radius = 48f * u, center = c)
                 drawCircle(Color(0xFF14100A), radius = 46f * u, center = c)
