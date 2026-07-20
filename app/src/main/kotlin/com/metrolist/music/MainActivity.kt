@@ -12,6 +12,7 @@ import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Intent
 import android.content.ServiceConnection
+import android.net.Uri
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -366,7 +367,9 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         if (::navController.isInitialized) {
             handleWidgetTargetIntent(intent, navController)
-            handleDeepLinkIntent(intent, navController)
+            if (!handleRuangDengarIntent(intent, navController)) {
+                handleDeepLinkIntent(intent, navController)
+            }
         } else {
             pendingIntent = intent
         }
@@ -937,12 +940,16 @@ class MainActivity : ComponentActivity() {
                     if (pendingIntent != null) {
                         handleWidgetTargetIntent(pendingIntent!!, navController)
                         handleRecognitionIntent(pendingIntent!!, navController)
-                        handleDeepLinkIntent(pendingIntent!!, navController)
+                        if (!handleRuangDengarIntent(pendingIntent!!, navController)) {
+                            handleDeepLinkIntent(pendingIntent!!, navController)
+                        }
                         pendingIntent = null
                     } else {
                         handleWidgetTargetIntent(intent, navController)
                         handleRecognitionIntent(intent, navController)
-                        handleDeepLinkIntent(intent, navController)
+                        if (!handleRuangDengarIntent(intent, navController)) {
+                            handleDeepLinkIntent(intent, navController)
+                        }
                     }
                 }
 
@@ -951,7 +958,9 @@ class MainActivity : ComponentActivity() {
                         Consumer<Intent> { intent ->
                             handleWidgetTargetIntent(intent, navController)
                             handleRecognitionIntent(intent, navController)
-                            handleDeepLinkIntent(intent, navController)
+                            if (!handleRuangDengarIntent(intent, navController)) {
+                                handleDeepLinkIntent(intent, navController)
+                            }
                         }
 
                     addOnNewIntentListener(listener)
@@ -1455,6 +1464,31 @@ class MainActivity : ComponentActivity() {
         } ?: return
 
         navController.navigate(targetRoute.route)
+    }
+
+    /**
+     * Share intent dari TikTok (ACTION_SEND text/plain) → buka layar Ruang Dengar
+     * dengan link auto-paste + auto-resolve. Return true kalau intent kepakai,
+     * supaya handleDeepLinkIntent tidak ikut nyamber EXTRA_TEXT-nya.
+     */
+    private fun handleRuangDengarIntent(
+        intent: Intent,
+        navController: NavHostController,
+    ): Boolean {
+        if (intent.action != Intent.ACTION_SEND) return false
+        val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return false
+        val tiktokUrl = com.metrolist.music.ruangdengar.TikTokExtractor.findUrl(text)
+        intent.action = null
+        intent.removeExtra(Intent.EXTRA_TEXT)
+        val route = if (tiktokUrl != null) {
+            "ruang_dengar?sharedUrl=${Uri.encode(tiktokUrl)}"
+        } else {
+            "ruang_dengar"
+        }
+        navController.navigate(route) {
+            launchSingleTop = true
+        }
+        return true
     }
 
     private fun handleDeepLinkIntent(

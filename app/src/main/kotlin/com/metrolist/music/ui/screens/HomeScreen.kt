@@ -156,6 +156,7 @@ import com.metrolist.music.ui.menu.YouTubeAlbumMenu
 import com.metrolist.music.ui.menu.YouTubeArtistMenu
 import com.metrolist.music.ui.menu.YouTubePlaylistMenu
 import com.metrolist.music.ui.menu.YouTubeSongMenu
+import com.metrolist.music.ruangdengar.ui.RuangDengarFab
 import com.metrolist.music.ui.utils.SnapLayoutInfoProvider
 import com.metrolist.music.ui.utils.resize
 import com.metrolist.music.utils.joinByBullet
@@ -2598,6 +2599,11 @@ fun HomeScreen(
                 },
                 onRecognitionClick = {
                     navController.navigate("recognition")
+                },
+                topContent = {
+                    RuangDengarFab(
+                        onClick = { navController.navigate("ruang_dengar") },
+                    )
                 },
             )
         }

@@ -25,6 +25,7 @@ import androidx.navigation.compose.dialog
 import androidx.navigation.navArgument
 import com.metrolist.music.constants.DarkModeKey
 import com.metrolist.music.constants.PureBlackKey
+import com.metrolist.music.ruangdengar.ui.RuangDengarScreen
 import com.metrolist.music.ui.screens.artist.ArtistAlbumsScreen
 import com.metrolist.music.ui.screens.artist.ArtistItemsScreen
 import com.metrolist.music.ui.screens.artist.ArtistScreen
@@ -447,6 +448,21 @@ fun NavGraphBuilder.navigationBuilder(
     composable("recognition_history") {
         RecognitionHistoryScreen(navController)
     }
+
+    composable(
+        route = "ruang_dengar?sharedUrl={sharedUrl}",
+        arguments =
+            listOf(
+                navArgument("sharedUrl") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                },
+            ),
+    ) {
+        RuangDengarScreen(navController, it.arguments?.getString("sharedUrl"))
+    }
+
     composable("settings/android_auto") {
         AndroidAutoSettings(navController, scrollBehavior)
     }
