@@ -28,6 +28,9 @@ val debugKeyAlias = System.getenv("METROLIST_DEBUG_KEY_ALIAS")?.takeIf { it.isNo
 val debugKeyPassword = System.getenv("METROLIST_DEBUG_KEY_PASSWORD")?.takeIf { it.isNotBlank() } ?: "android"
 val persistentDebugKeystoreFile = file("persistent-debug.keystore")
 val workflowDebugKeystoreFile = debugKeystorePathOverride?.let(::file)
+// Split per-ABI (APK release kecil) — dinyalain dari CI via env, soalnya
+// splits.abi bentrok sama ndk.abiFilters kalau aktif bareng.
+val abiSplitEnabled = System.getenv("METROLIST_SPLIT_ABI") == "true"
 
 plugins {
     id("com.android.application")
@@ -108,8 +111,10 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
 
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        if (!abiSplitEnabled) {
+            ndk {
+                abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            }
         }
 
         // LastFM API keys from GitHub Secrets
@@ -174,6 +179,15 @@ android {
         }
     }
 
+    splits {
+        abi {
+            isEnable = abiSplitEnabled
+            reset()
+            include("arm64-v8a", "armeabi-v7a")
+            isUniversalApk = false
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -184,6 +198,16 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            // Fork ga punya keystore release + secrets-nya — fallback ke
+            // keystore persisten yang dicommit biar signature stabil antar build.
+            signingConfig =
+                if (file("keystore/release.keystore").exists()) {
+                    signingConfigs.getByName("release")
+                } else if (workflowDebugKeystoreFile != null) {
+                    signingConfigs.getByName("workflowDebug")
+                } else {
+                    signingConfigs.getByName("persistentDebug")
+                }
         }
         debug {
             if (applicationIdOverride == null) {
