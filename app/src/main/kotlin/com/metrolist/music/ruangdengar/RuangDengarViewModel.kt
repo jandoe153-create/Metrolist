@@ -17,12 +17,15 @@ import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import com.metrolist.innertube.YouTube
 import com.metrolist.innertube.models.SongItem
+import com.metrolist.music.constants.OpenRouterApiKey
 import com.metrolist.music.db.MusicDatabase
 import com.metrolist.music.db.entities.SongEntity
 import com.metrolist.music.models.toMediaMetadata
 import com.metrolist.music.playback.ExoDownloadService
 import com.metrolist.music.recognition.AudioResampler
 import com.metrolist.music.recognition.VibraSignature
+import com.metrolist.music.utils.AiKeyRing
+import com.metrolist.music.utils.dataStore
 import com.metrolist.shazamkit.Shazam
 import com.metrolist.shazamkit.models.RecognitionResult
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -34,6 +37,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -45,10 +49,14 @@ import timber.log.Timber
 import java.io.File
 import javax.inject.Inject
 
-enum class RdMode { INPUT, RESOLVING, RESOLVED, DOWNLOADING, DOWNLOADED, IDENTIFYING, FOUND }
+enum class RdMode { INPUT, RESOLVING, RESOLVED, DOWNLOADING, DOWNLOADED, IDENTIFYING, FOUND, GEMINI_PICK }
+
+/** Sumber identifikasi — urutan tier: metadata TikTok → Shazam → Gemini. */
+enum class RdSource { TIKTOK, SHAZAM, GEMINI }
 
 data class RdSongResult(
-    val shazam: RecognitionResult,
+    val source: RdSource,
+    val coverUrl: String?,
     val song: SongItem,
 )
 
@@ -73,9 +81,12 @@ class RuangDengarViewModel @Inject constructor(
     val downloadedSizeMb = MutableStateFlow(0.0)
     val savedToGallery = MutableStateFlow(false)
 
-    /** 0 = belum mulai; 1..4 = step yang lagi jalan; 5 = semua beres */
+    /** 0 = belum mulai; 1..5 = step yang lagi jalan; 6 = semua beres */
     val identifyStep = MutableStateFlow(0)
     val result = MutableStateFlow<RdSongResult?>(null)
+
+    /** Opsi keyword hasil Gemini (mode GEMINI_PICK) — tap untuk lempar ke pencarian. */
+    val geminiGuesses = MutableStateFlow<List<GeminiGuess>>(emptyList())
 
     val fullDownloadStarted = MutableStateFlow(false)
 
@@ -188,18 +199,102 @@ class RuangDengarViewModel @Inject constructor(
         }
     }
 
-    fun identify() {
+    /** Alur auto 3 tier: metadata TikTok → Shazam → Gemini. */
+    fun identify() = runIdentify(force = null)
+
+    /** Override manual "Lempar ke Shazam" — bisa dari hasil apa pun. */
+    fun throwToShazam() = runIdentify(force = RdSource.SHAZAM)
+
+    /** Override manual "Lempar ke Gemini" — bisa dari hasil apa pun. */
+    fun throwToGemini() = runIdentify(force = RdSource.GEMINI)
+
+    private fun runIdentify(force: RdSource?) {
         val file = downloadedFile.value ?: return
+        val v = video.value
         mode.value = RdMode.IDENTIFYING
+        result.value = null
+        geminiGuesses.value = emptyList()
         identifyStep.value = 1
         job?.cancel()
         job = viewModelScope.launch {
             try {
-                // Step 1: ekstrak audio dari video
-                val decoded = VideoAudioDecoder.decode(file)
+                // ── TIER 1: metadata musik TikTok (gratis, udah ada di JSON) ──
+                if (force == null) {
+                    val found = tryTikTokMetadata(v)
+                    if (found != null) {
+                        finishFound(found)
+                        return@launch
+                    }
+                }
 
-                // Step 2: bikin fingerprint
-                identifyStep.value = 2
+                // ── TIER 2: Shazam (multi-window: awal/tengah/akhir video) ──
+                if (force == null || force == RdSource.SHAZAM) {
+                    identifyStep.value = 2
+                    val shazamResult = shazamMultiWindow(file, v?.duration ?: 0)
+                    if (shazamResult != null) {
+                        identifyStep.value = 5
+                        val song = searchYtMusic("${shazamResult.title} ${shazamResult.artist}")
+                        if (song != null) {
+                            finishFound(
+                                RdSongResult(
+                                    source = RdSource.SHAZAM,
+                                    coverUrl = shazamResult.coverArtUrl ?: song.thumbnail,
+                                    song = song,
+                                ),
+                            )
+                            return@launch
+                        }
+                        if (force == RdSource.SHAZAM) {
+                            throw TikTokException("\"${shazamResult.title}\" tidak ketemu di YT Music.")
+                        }
+                    } else if (force == RdSource.SHAZAM) {
+                        throw TikTokException("Shazam tetap tidak mengenali lagunya. Coba lempar ke Gemini.")
+                    }
+                }
+
+                // ── TIER 3: Gemini 3.5 Flash (jaring pengaman, hasil = opsi keyword) ──
+                runGeminiTier(file, v)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                Timber.e(e, "identify failed")
+                identifyStep.value = 0
+                mode.value = RdMode.DOWNLOADED
+                showToast(friendly(e, "Identifikasi gagal"), bad = true)
+            }
+        }
+    }
+
+    /** Tier 1: pakai judul sound dari TikTok kalau bukan original sound. */
+    private suspend fun tryTikTokMetadata(v: TikTokVideo?): RdSongResult? {
+        val title = v?.musicTitle?.trim().orEmpty()
+        val usable = title.isNotBlank() &&
+            !v!!.musicIsOriginal &&
+            !title.startsWith("original sound", ignoreCase = true) &&
+            !title.startsWith("suara asli", ignoreCase = true) &&
+            !title.startsWith("son original", ignoreCase = true)
+        if (!usable) return null
+        identifyStep.value = 5
+        val author = v.musicAuthor?.trim().orEmpty()
+        val song = searchYtMusic(listOf(title, author).filter { it.isNotBlank() }.joinToString(" "))
+            ?: return null // metadata ada tapi ga ketemu di YT Music → lanjut tier 2
+        return RdSongResult(source = RdSource.TIKTOK, coverUrl = song.thumbnail, song = song)
+    }
+
+    /**
+     * Tier 2: Shazam dicoba dari beberapa titik video (intro TikTok sering
+     * voiceover / musik masuk belakangan) — match pertama menang.
+     */
+    private suspend fun shazamMultiWindow(file: File, durationSec: Int): RecognitionResult? {
+        val starts = buildList {
+            add(1)
+            if (durationSec > 26) add(durationSec / 2 - 6)
+            if (durationSec > 40) add(durationSec - 14)
+        }.map { it.coerceAtLeast(0) }.distinct()
+
+        for ((i, startSec) in starts.withIndex()) {
+            try {
+                val decoded = VideoAudioDecoder.decode(file, startSec = startSec, maxSec = 12)
+                identifyStep.value = 3
                 val resampled = AudioResampler
                     .resample(decoded, VibraSignature.REQUIRED_SAMPLE_RATE)
                     .getOrElse { throw TikTokException("Gagal proses audio: ${it.message}") }
@@ -207,37 +302,60 @@ class RuangDengarViewModel @Inject constructor(
                     VibraSignature.fromI16(resampled.data)
                 }
                 val sampleMs = (resampled.data.size / 2) * 1000L / VibraSignature.REQUIRED_SAMPLE_RATE
-
-                // Step 3: cocokkan ke Shazam
-                identifyStep.value = 3
-                val shazamResult = Shazam.recognize(signature, sampleMs).getOrElse {
-                    val msg = it.message ?: ""
-                    if (msg.contains("No match", ignoreCase = true)) {
-                        throw TikTokException("Lagu tidak dikenali Shazam. Mungkin original sound.")
-                    }
-                    throw TikTokException("Shazam error: $msg")
-                }
-
-                // Step 4: cari versi full di YT Music
-                identifyStep.value = 4
-                val query = "${shazamResult.title} ${shazamResult.artist}"
-                val song = YouTube.search(query, YouTube.SearchFilter.FILTER_SONG)
-                    .getOrNull()
-                    ?.items
-                    ?.filterIsInstance<SongItem>()
-                    ?.firstOrNull()
-                    ?: throw TikTokException("\"${shazamResult.title}\" tidak ketemu di YT Music.")
-
-                identifyStep.value = 5
-                result.value = RdSongResult(shazamResult, song)
-                mode.value = RdMode.FOUND
+                val match = Shazam.recognize(signature, sampleMs).getOrNull()
+                if (match != null) return match
+                Timber.d("Shazam window %d (mulai %ds) tanpa match", i + 1, startSec)
             } catch (e: Exception) {
-                Timber.e(e, "identify failed")
-                identifyStep.value = 0
-                mode.value = RdMode.DOWNLOADED
-                showToast(friendly(e, "Identifikasi gagal"), bad = true)
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                Timber.w(e, "Shazam window %d error", i + 1)
             }
         }
+        return null
+    }
+
+    /** Tier 3: Gemini dengerin audionya, hasil = daftar opsi keyword klik-able. */
+    private suspend fun runGeminiTier(file: File, v: TikTokVideo?) {
+        identifyStep.value = 4
+        val rawKeys = context.dataStore.data.first()[OpenRouterApiKey] ?: ""
+        val keys = AiKeyRing.parse(rawKeys)
+        if (keys.isEmpty()) {
+            throw TikTokException(
+                "Shazam nyerah & API key Gemini belum diisi. Isi di Profil → Setting → Terjemahan lirik AI.",
+            )
+        }
+        // Audio lebih panjang dari window Shazam biar Gemini kebagian lirik
+        val decoded = VideoAudioDecoder.decode(
+            file,
+            startSec = 0,
+            maxSec = (v?.duration ?: 60).coerceIn(10, 60),
+        )
+        val slim = AudioResampler.resample(decoded, 16_000)
+            .getOrElse { throw TikTokException("Gagal proses audio buat Gemini: ${it.message}") }
+        val hint = buildString {
+            v?.title?.takeIf { it.isNotBlank() && it != "(tanpa judul)" }?.let { append("caption: $it") }
+            v?.musicTitle?.takeIf { it.isNotBlank() }?.let {
+                if (isNotEmpty()) append("; ")
+                append("sound label: $it")
+                v.musicAuthor?.takeIf { a -> a.isNotBlank() }?.let { a -> append(" — $a") }
+            }
+        }.ifBlank { null }
+        val guesses = GeminiMusicIdentifier.identify(slim, hint, keys)
+        identifyStep.value = 5
+        geminiGuesses.value = guesses
+        mode.value = RdMode.GEMINI_PICK
+    }
+
+    private suspend fun searchYtMusic(query: String): SongItem? =
+        YouTube.search(query, YouTube.SearchFilter.FILTER_SONG)
+            .getOrNull()
+            ?.items
+            ?.filterIsInstance<SongItem>()
+            ?.firstOrNull()
+
+    private fun finishFound(r: RdSongResult) {
+        identifyStep.value = 6
+        result.value = r
+        mode.value = RdMode.FOUND
     }
 
     fun toggleFavorite() {
@@ -288,6 +406,7 @@ class RuangDengarViewModel @Inject constructor(
         savedToGallery.value = false
         identifyStep.value = 0
         result.value = null
+        geminiGuesses.value = emptyList()
         fullDownloadStarted.value = false
     }
 

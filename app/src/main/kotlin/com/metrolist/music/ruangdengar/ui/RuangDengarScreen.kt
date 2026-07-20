@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -91,8 +92,11 @@ import com.metrolist.music.LocalPlayerConnection
 import com.metrolist.music.R
 import com.metrolist.music.models.toMediaMetadata
 import com.metrolist.music.playback.queues.YouTubeQueue
+import com.metrolist.music.ruangdengar.GeminiGuess
 import com.metrolist.music.ruangdengar.RdMode
+import com.metrolist.music.ruangdengar.RdSource
 import com.metrolist.music.ruangdengar.RuangDengarViewModel
+import com.metrolist.music.utils.SearchRoutes
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.pow
@@ -129,6 +133,7 @@ fun RuangDengarScreen(
     val downloadedSizeMb by viewModel.downloadedSizeMb.collectAsState()
     val identifyStep by viewModel.identifyStep.collectAsState()
     val result by viewModel.result.collectAsState()
+    val geminiGuesses by viewModel.geminiGuesses.collectAsState()
     val isLiked by viewModel.isLiked.collectAsState()
     val fullDownloadStarted by viewModel.fullDownloadStarted.collectAsState()
     val toast by viewModel.toast.collectAsState()
@@ -283,7 +288,7 @@ fun RuangDengarScreen(
                 // ── KARTU 2: VIDEO TERSIMPAN ──────────────────
                 AnimatedVisibility(
                     visible = mode == RdMode.DOWNLOADED || mode == RdMode.IDENTIFYING ||
-                        mode == RdMode.FOUND,
+                        mode == RdMode.FOUND || mode == RdMode.GEMINI_PICK,
                     enter = fadeIn(tween(500)) + slideInVertically(tween(500, easing = RdEasing.Spring)) { it / 4 },
                     exit = fadeOut(),
                 ) {
@@ -339,7 +344,8 @@ fun RuangDengarScreen(
 
                 // ── KARTU 3: CHECKLIST IDENTIFIKASI ───────────
                 AnimatedVisibility(
-                    visible = mode == RdMode.IDENTIFYING || mode == RdMode.FOUND,
+                    visible = mode == RdMode.IDENTIFYING || mode == RdMode.FOUND ||
+                        mode == RdMode.GEMINI_PICK,
                     enter = fadeIn(tween(500)) + slideInVertically(tween(500, easing = RdEasing.Spring)) { it / 4 },
                     exit = fadeOut(),
                 ) {
@@ -371,7 +377,12 @@ fun RuangDengarScreen(
                                         r.song.duration?.let { append(" · ${fmtDur(it)}") }
                                         r.song.album?.name?.let { append(" · $it") }
                                     },
-                                    coverUrl = r.shazam.coverArtUrl ?: r.song.thumbnail,
+                                    sourceLabel = when (r.source) {
+                                        RdSource.TIKTOK -> "Metadata TikTok"
+                                        RdSource.SHAZAM -> "Cocok via Shazam"
+                                        RdSource.GEMINI -> "Tebakan Gemini"
+                                    },
+                                    coverUrl = r.coverUrl ?: r.song.thumbnail,
                                     isPlaying = isPlayingThis,
                                     isBuffering = isBufferingThis,
                                     onPlayPause = {
@@ -432,6 +443,12 @@ fun RuangDengarScreen(
                                     onClick = viewModel::downloadFullSong,
                                 )
                             }
+                            Spacer(Modifier.height(12.dp))
+                            // second opinion manual — wajib ada di semua hasil
+                            RdOverrideRow(
+                                onShazam = viewModel::throwToShazam,
+                                onGemini = viewModel::throwToGemini,
+                            )
                             Spacer(Modifier.height(20.dp))
                             RdOutlineButton(
                                 text = "MULAI ULANG",
@@ -449,6 +466,62 @@ fun RuangDengarScreen(
                                 onClick = viewModel::reset,
                             )
                         }
+                    }
+                }
+
+                // ── KARTU 5: OPSI GEMINI ──────────────────────
+                AnimatedVisibility(
+                    visible = mode == RdMode.GEMINI_PICK,
+                    enter = fadeIn(tween(600)) + slideInVertically(tween(600, easing = RdEasing.Spring)) { it / 4 },
+                    exit = fadeOut(),
+                ) {
+                    Column {
+                        RdCard {
+                            RdCardLabel("Tebakan Gemini · Pilih Keyword")
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = "Shazam ga nemu, jadi Gemini yang dengerin. Tap salah satu — langsung dicari di Metrolist.",
+                                style = TextStyle(
+                                    fontFamily = RdFonts.Mono, fontSize = 10.5.sp,
+                                    color = RdColors.Dim, lineHeight = 17.sp,
+                                ),
+                            )
+                            Spacer(Modifier.height(14.dp))
+                            geminiGuesses.forEachIndexed { i, guess ->
+                                RdGeminiOption(
+                                    index = i,
+                                    guess = guess,
+                                    onClick = {
+                                        navController.navigate(
+                                            SearchRoutes.resultRoute(guess.keyword),
+                                        )
+                                    },
+                                )
+                                if (i < geminiGuesses.lastIndex) Spacer(Modifier.height(10.dp))
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        RdOverrideRow(
+                            onShazam = viewModel::throwToShazam,
+                            onGemini = viewModel::throwToGemini,
+                            geminiText = "Tanya Gemini Lagi",
+                        )
+                        Spacer(Modifier.height(20.dp))
+                        RdOutlineButton(
+                            text = "MULAI ULANG",
+                            modifier = Modifier.fillMaxWidth(),
+                            color = RdColors.Dim,
+                            dashed = true,
+                            icon = {
+                                Icon(
+                                    painter = painterResource(R.drawable.refresh),
+                                    contentDescription = null,
+                                    tint = RdColors.Dim,
+                                    modifier = Modifier.size(13.dp),
+                                )
+                            },
+                            onClick = viewModel::reset,
+                        )
                     }
                 }
 
@@ -920,11 +993,120 @@ private fun RdProgressBar(pct: Int) {
     }
 }
 
+/* ═══════════ OVERRIDE (SECOND OPINION) ═══════════ */
+@Composable
+private fun RdOverrideRow(
+    onShazam: () -> Unit,
+    onGemini: () -> Unit,
+    geminiText: String = "Lempar ke Gemini",
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        RdOutlineButton(
+            text = "Lempar ke Shazam",
+            modifier = Modifier.weight(1f),
+            color = RdColors.Smoke,
+            icon = {
+                Icon(
+                    painter = painterResource(R.drawable.mic),
+                    contentDescription = null,
+                    tint = RdColors.Smoke,
+                    modifier = Modifier.size(14.dp),
+                )
+            },
+            onClick = onShazam,
+        )
+        RdOutlineButton(
+            text = geminiText,
+            modifier = Modifier.weight(1f),
+            color = RdColors.Copper,
+            borderColor = RdColors.Copper.copy(alpha = 0.35f),
+            icon = {
+                Icon(
+                    painter = painterResource(R.drawable.star),
+                    contentDescription = null,
+                    tint = RdColors.Copper,
+                    modifier = Modifier.size(14.dp),
+                )
+            },
+            onClick = onGemini,
+        )
+    }
+}
+
+/* ═══════════ OPSI GEMINI ═══════════ */
+@Composable
+private fun RdGeminiOption(
+    index: Int,
+    guess: GeminiGuess,
+    onClick: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(RdColors.Pit)
+            .border(
+                1.dp,
+                if (index == 0) RdColors.Amber.copy(alpha = 0.35f) else RdColors.LineSoft,
+                RoundedCornerShape(14.dp),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+    ) {
+        Text(
+            text = "${index + 1}",
+            style = TextStyle(
+                fontFamily = RdFonts.Mono, fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = if (index == 0) RdColors.InkOnGold else RdColors.Dim,
+            ),
+            modifier = Modifier
+                .size(22.dp)
+                .background(
+                    if (index == 0) RdColors.Amber else RdColors.Line,
+                    CircleShape,
+                )
+                .wrapContentSize(),
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = guess.keyword,
+                style = TextStyle(
+                    fontFamily = RdFonts.Ui, fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold, color = RdColors.Cream,
+                    lineHeight = 18.sp,
+                ),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(3.dp))
+            Text(
+                text = "yakin ${(guess.confidence * 100).toInt()}%",
+                style = TextStyle(
+                    fontFamily = RdFonts.Mono, fontSize = 10.sp,
+                    color = if (index == 0) RdColors.Amber else RdColors.Dim,
+                    letterSpacing = 0.5.sp,
+                ),
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Icon(
+            painter = painterResource(R.drawable.search),
+            contentDescription = null,
+            tint = RdColors.Copper,
+            modifier = Modifier.size(15.dp),
+        )
+    }
+}
+
 /* ═══════════ CHECKLIST ═══════════ */
 private val RdSteps = listOf(
+    "Cek metadata musik TikTok",
     "Ekstrak audio dari video",
-    "Bikin fingerprint audio",
     "Cocokkan ke database Shazam",
+    "Tanya Gemini (kalau Shazam nyerah)",
     "Cari versi full di YT Music",
 )
 
@@ -1060,6 +1242,7 @@ private fun RdStepIndicator(done: Boolean, active: Boolean) {
 private fun RdSongCard(
     title: String,
     artist: String,
+    sourceLabel: String,
     coverUrl: String?,
     isPlaying: Boolean,
     isBuffering: Boolean,
@@ -1102,7 +1285,7 @@ private fun RdSongCard(
                 RdMatchRing()
                 Spacer(Modifier.width(7.dp))
                 Text(
-                    text = "Cocok via Shazam",
+                    text = sourceLabel,
                     style = TextStyle(
                         fontFamily = RdFonts.Mono, fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold, color = RdColors.Sage,

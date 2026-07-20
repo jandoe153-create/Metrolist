@@ -23,6 +23,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.contentOrNull
@@ -39,6 +40,11 @@ data class TikTokVideo(
     val thumbnail: String?,
     val videoUrl: String,
     val pageUrl: String,
+    /** Metadata sound TikTok (tier 1 identifikasi) — null kalau ga ada di JSON. */
+    val musicTitle: String? = null,
+    val musicAuthor: String? = null,
+    /** true = "original sound" kreator, bukan lagu beneran. */
+    val musicIsOriginal: Boolean = false,
 )
 
 class TikTokException(message: String) : Exception(message)
@@ -119,6 +125,7 @@ object TikTokExtractor {
 
         val author = item["author"]?.jsonObject
         val stats = item["stats"]?.jsonObject
+        val music = item["music"]?.jsonObject
 
         TikTokVideo(
             id = item["id"]?.jsonPrimitive?.contentOrNull ?: "tiktok",
@@ -133,6 +140,9 @@ object TikTokExtractor {
                 ?: video["originCover"]?.jsonPrimitive?.contentOrNull,
             videoUrl = videoUrl,
             pageUrl = finalUrl,
+            musicTitle = music?.get("title")?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
+            musicAuthor = music?.get("authorName")?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
+            musicIsOriginal = music?.get("original")?.jsonPrimitive?.booleanOrNull ?: false,
         )
     }
 
